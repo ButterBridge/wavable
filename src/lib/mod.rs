@@ -3,9 +3,10 @@ use std::error::Error;
 use std::fs::File;
 use std::io::prelude::*;
 use std::io::Cursor;
+
 use std::str;
 
-trait ChunkIO<T: ?Sized> {
+trait ChunkIO<T> {
     fn new(buf: &[u8]) -> T;
     fn cursor_over<'a>(
         &self,
