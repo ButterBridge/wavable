@@ -8,10 +8,7 @@ use std::str;
 
 trait ChunkIO<T> {
     fn new(buf: &[u8]) -> T;
-    fn cursor_over<'a>(
-        &self,
-        cursor: &'a Cursor<Vec<u8>>,
-    ) -> Result<Cursor<Vec<u8>>, Box<dyn Error>>;
+    fn cursor_over<'a>(&self, cursor: Cursor<Vec<u8>>) -> Result<Cursor<Vec<u8>>, Box<dyn Error>>;
 }
 
 struct RiffHeader<'a> {
@@ -37,15 +34,12 @@ impl<'a> ChunkIO<RiffHeader<'a>> for RiffHeader<'a> {
         RiffHeader { id, format, size }
     }
 
-    fn cursor_over<'b>(
-        &self,
-        cursor: &'b Cursor<Vec<u8>>,
-    ) -> Result<Cursor<Vec<u8>>, Box<dyn Error>> {
-        let mut c = cursor.to_owned();
-        c.write(self.id.as_bytes())?;
-        c.write(&(self.size).to_le_bytes())?;
-        c.write(self.format.as_bytes())?;
-        Ok(c)
+    fn cursor_over(&self, mut cursor: Cursor<Vec<u8>>) -> Result<Cursor<Vec<u8>>, Box<dyn Error>> {
+        // let mut c = cursor.to_owned();
+        cursor.write(self.id.as_bytes())?;
+        cursor.write(&self.size.to_le_bytes())?;
+        cursor.write(self.format.as_bytes())?;
+        Ok(cursor)
     }
 }
 
@@ -104,18 +98,18 @@ impl<'a> ChunkIO<FormatSubchunk<'a>> for FormatSubchunk<'a> {
 
     fn cursor_over<'b>(
         &self,
-        cursor: &'b Cursor<Vec<u8>>,
+        mut cursor: Cursor<Vec<u8>>,
     ) -> Result<Cursor<Vec<u8>>, Box<dyn Error>> {
-        let mut c = cursor.to_owned();
-        c.write(self.id.as_bytes())?;
-        c.write(&(self.size).to_le_bytes())?;
-        c.write(&(self.audio_format).to_le_bytes())?;
-        c.write(&(self.num_channels).to_le_bytes())?;
-        c.write(&(self.sample_rate).to_le_bytes())?;
-        c.write(&(self.byte_rate).to_le_bytes())?;
-        c.write(&(self.block_align).to_le_bytes())?;
-        c.write(&(self.bits_per_sample).to_le_bytes())?;
-        Ok(c)
+        // let mut c = cursor.to_owned();
+        cursor.write(self.id.as_bytes())?;
+        cursor.write(&self.size.to_le_bytes())?;
+        cursor.write(&self.audio_format.to_le_bytes())?;
+        cursor.write(&self.num_channels.to_le_bytes())?;
+        cursor.write(&self.sample_rate.to_le_bytes())?;
+        cursor.write(&self.byte_rate.to_le_bytes())?;
+        cursor.write(&self.block_align.to_le_bytes())?;
+        cursor.write(&self.bits_per_sample.to_le_bytes())?;
+        Ok(cursor)
     }
 }
 
@@ -140,13 +134,13 @@ impl<'a> ChunkIO<DataSubchunk<'a>> for DataSubchunk<'a> {
 
     fn cursor_over<'b>(
         &self,
-        cursor: &'b Cursor<Vec<u8>>,
+        mut cursor: Cursor<Vec<u8>>,
     ) -> Result<Cursor<Vec<u8>>, Box<dyn Error>> {
-        let mut c = cursor.to_owned();
-        c.write(self.id.as_bytes())?;
-        c.write(&(self.size).to_le_bytes())?;
-        c.write(&self.data[..])?;
-        Ok(c)
+        // let mut c = cursor.to_owned();
+        cursor.write(self.id.as_bytes())?;
+        cursor.write(&(self.size).to_le_bytes())?;
+        cursor.write(&self.data[..])?;
+        Ok(cursor)
     }
 }
 
@@ -158,7 +152,7 @@ impl DataSubchunk<'_> {
             .clone()
             .into_iter()
             .enumerate()
-            .filter(|(i, _)| (i % 2) == 0)
+            .filter(|(i, _)| ((i / 4) % 2) == 0)
             .map(|(_, b)| b)
             .collect::<Vec<u8>>();
     }
@@ -186,13 +180,13 @@ impl Wav<'_> {
     }
 
     pub fn write_to_file(&self, filename: &str) -> Result<(), Box<dyn Error>> {
-        let writer = Cursor::new(Vec::new());
-        let writer_after_header = self.header.cursor_over(&writer)?;
-        let writer_after_format = self.format.cursor_over(&writer_after_header)?;
-        let complete_writer = self.data.cursor_over(&writer_after_format)?;
+        let mut writer = Cursor::new(Vec::new());
+        writer = self.header.cursor_over(writer)?;
+        writer = self.format.cursor_over(writer)?;
+        writer = self.data.cursor_over(writer)?;
 
         let mut file = File::create(filename)?;
-        file.write_all(&complete_writer.into_inner())?;
+        file.write_all(&writer.into_inner())?;
 
         Ok(())
     }
