@@ -1,23 +1,29 @@
 use byteorder::{LittleEndian, ReadBytesExt};
 use std::error::Error;
-use std::fs::File;
 use std::io::prelude::*;
 use std::io::Cursor;
-
 use std::str;
 
-trait ChunkIO<T> {
-    fn new(buf: &[u8]) -> T;
+trait Chunk<T> {
     fn cursor_over<'a>(&self, cursor: Cursor<Vec<u8>>) -> Result<Cursor<Vec<u8>>, Box<dyn Error>>;
 }
 
+trait MetadataChunk<T>: Chunk<T> {
+    fn new(buf: &[u8]) -> T;
+}
+
+trait DataChunk<'a, T>: Chunk<T> {
+    fn new(buf: &[u8], data_holder: Box<Vec<u8>>) -> T;
+}
+
+#[derive(Copy, Clone)]
 struct RiffHeader<'a> {
     id: &'a str,
     size: u32,
     format: &'a str,
 }
 
-impl<'a> ChunkIO<RiffHeader<'a>> for RiffHeader<'a> {
+impl<'a> MetadataChunk<RiffHeader<'a>> for RiffHeader<'a> {
     fn new(buf: &[u8]) -> RiffHeader<'a> {
         if buf.len() != 12 {
             panic!("Riff header should be 12 bytes");
@@ -33,7 +39,8 @@ impl<'a> ChunkIO<RiffHeader<'a>> for RiffHeader<'a> {
         };
         RiffHeader { id, format, size }
     }
-
+}
+impl<'a> Chunk<RiffHeader<'a>> for RiffHeader<'a> {
     fn cursor_over(&self, mut cursor: Cursor<Vec<u8>>) -> Result<Cursor<Vec<u8>>, Box<dyn Error>> {
         // let mut c = cursor.to_owned();
         cursor.write(self.id.as_bytes())?;
@@ -49,6 +56,7 @@ impl RiffHeader<'_> {
     }
 }
 
+#[derive(Copy, Clone)]
 struct FormatSubchunk<'a> {
     id: &'a str,
     size: u32,
@@ -60,7 +68,7 @@ struct FormatSubchunk<'a> {
     bits_per_sample: u16,
 }
 
-impl<'a> ChunkIO<FormatSubchunk<'a>> for FormatSubchunk<'a> {
+impl<'a> MetadataChunk<FormatSubchunk<'a>> for FormatSubchunk<'a> {
     fn new(buf: &[u8]) -> FormatSubchunk<'a> {
         if buf.len() != 24 {
             panic!("Format subchunk should be 24 bytes");
@@ -95,7 +103,9 @@ impl<'a> ChunkIO<FormatSubchunk<'a>> for FormatSubchunk<'a> {
             bits_per_sample,
         }
     }
+}
 
+impl<'a> Chunk<FormatSubchunk<'a>> for FormatSubchunk<'a> {
     fn cursor_over<'b>(
         &self,
         mut cursor: Cursor<Vec<u8>>,
@@ -113,26 +123,33 @@ impl<'a> ChunkIO<FormatSubchunk<'a>> for FormatSubchunk<'a> {
     }
 }
 
+#[derive(Clone)]
 struct DataSubchunk<'a> {
     id: &'a str,
     size: u32,
-    data: Vec<u8>,
+    data: Box<Vec<u8>>,
 }
 
-impl<'a> ChunkIO<DataSubchunk<'a>> for DataSubchunk<'a> {
-    fn new(buf: &[u8]) -> DataSubchunk<'a> {
+impl<'a, 'b> DataChunk<'b, DataSubchunk<'a>> for DataSubchunk<'a> {
+    fn new(buf: &[u8], mut data_holder: Box<Vec<u8>>) -> DataSubchunk<'a> {
         let id = match str::from_utf8(&buf[..4]) {
             Ok("data") => "data",
             _ => panic!("Data subchunk id can only be 'data'"),
         };
         let size = read_buffer_as_u32(&buf[4..8]);
-        let mut data: Vec<u8> = Vec::with_capacity(buf.len());
-        data.resize(buf.len(), 0);
-        data.copy_from_slice(buf);
-        DataSubchunk { id, size, data }
+        let data_buffer = &buf[8..];
+        data_holder.resize(data_buffer.len(), 0);
+        data_holder.copy_from_slice(data_buffer);
+        DataSubchunk {
+            id,
+            size,
+            data: data_holder,
+        }
     }
+}
 
-    fn cursor_over<'b>(
+impl<'a> Chunk<DataSubchunk<'a>> for DataSubchunk<'a> {
+    fn cursor_over<'c>(
         &self,
         mut cursor: Cursor<Vec<u8>>,
     ) -> Result<Cursor<Vec<u8>>, Box<dyn Error>> {
@@ -147,17 +164,19 @@ impl<'a> ChunkIO<DataSubchunk<'a>> for DataSubchunk<'a> {
 impl DataSubchunk<'_> {
     fn double_speed(&mut self) {
         self.size = self.size / 2;
-        self.data = self
-            .data
-            .clone()
-            .into_iter()
-            .enumerate()
-            .filter(|(i, _)| ((i / 4) % 2) == 0)
-            .map(|(_, b)| b)
-            .collect::<Vec<u8>>();
+        self.data = Box::new(
+            self.data
+                .clone()
+                .into_iter()
+                .enumerate()
+                .filter(|(i, _)| ((i / 4) % 2) == 0)
+                .map(|(_, b)| b)
+                .collect::<Vec<u8>>(),
+        );
     }
 }
 
+#[derive(Clone)]
 pub struct Wav<'a> {
     header: RiffHeader<'a>,
     format: FormatSubchunk<'a>,
@@ -166,10 +185,11 @@ pub struct Wav<'a> {
 
 impl Wav<'_> {
     pub fn new(buf: &[u8]) -> Wav {
+        let data_buf = &buf[36..];
         Wav {
             header: RiffHeader::new(&buf[0..12]),
             format: FormatSubchunk::new(&buf[12..36]),
-            data: DataSubchunk::new(&buf[36..]),
+            data: DataSubchunk::new(data_buf, Box::new(Vec::new())),
         }
     }
 
@@ -179,16 +199,13 @@ impl Wav<'_> {
         ()
     }
 
-    pub fn write_to_file(&self, filename: &str) -> Result<(), Box<dyn Error>> {
+    pub fn write_contents(&self) -> Result<Vec<u8>, Box<dyn Error>> {
         let mut writer = Cursor::new(Vec::new());
         writer = self.header.cursor_over(writer)?;
         writer = self.format.cursor_over(writer)?;
         writer = self.data.cursor_over(writer)?;
-
-        let mut file = File::create(filename)?;
-        file.write_all(&writer.into_inner())?;
-
-        Ok(())
+        let data = writer.into_inner();
+        Ok(data)
     }
 }
 
