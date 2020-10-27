@@ -25,7 +25,13 @@ fn main() -> Result<(), Box<dyn Error>> {
     let mode: io::Mode = match args.get(0) {
         None => io::Mode::Complex,
         Some(arg) => {
-            let op: &io::Operation<'_> = operations.iter().find(|op| op.name() == arg).unwrap();
+            let op: &io::Operation<'_> = operations
+                .iter()
+                .find(|op| op.name() == arg)
+                .unwrap_or_else(|| {
+                    println!("This operation isn't known. TODO: list operations!");
+                    process::exit(1);
+                });
             io::Mode::Simple(op)
         }
     };
@@ -35,7 +41,10 @@ fn main() -> Result<(), Box<dyn Error>> {
                 println!("Please provide a filename!");
                 process::exit(1);
             });
-            let mut f = File::open(&file_name)?;
+            let mut f = File::open(&file_name).unwrap_or_else(|_op| {
+                println!("File not found!");
+                process::exit(1);
+            });
             let mut buffer = Vec::new();
 
             f.read_to_end(&mut buffer)?;
